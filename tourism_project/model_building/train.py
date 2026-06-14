@@ -1,9 +1,5 @@
+# for data manipulation
 import pandas as pd
-import sklearn
-# for creating a folder
-import os
-# for data preprocessing and pipeline creation
-from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import make_column_transformer
 from sklearn.pipeline import make_pipeline
@@ -13,32 +9,31 @@ from sklearn.model_selection import GridSearchCV
 from sklearn.metrics import accuracy_score, classification_report, recall_score
 # for model serialization
 import joblib
+# for creating a folder
+import os
+# for hugging face space authentication to upload files
+from huggingface_hub import login, HfApi, create_repo
+from huggingface_hub.utils import RepositoryNotFoundError, HfHubHTTPError
+import mlflow
+
+mlflow.set_tracking_uri("http://localhost:5000")
+mlflow.set_experiment("mlops-training-experiment")
+
+api = HfApi()
 
 
-df = pd.read_csv("tourism_project/data/tourism.csv")
-print("Dataset loaded successfully.")
+Xtrain_path = "hf://datasets/saranappu1990/Tourism-Package-Prediction/Xtrain.csv"
+Xtest_path = "hf://datasets/saranappu1990/Tourism-Package-Prediction/Xtest.csv"
+ytrain_path = "hf://datasets/saranappu1990/Tourism-Package-Prediction/ytrain.csv"
+ytest_path = "hf://datasets/saranappu1990/Tourism-Package-Prediction/ytest.csv"
 
-# Drop the CustomerID as there are no duplicates
-df.drop(columns=['CustomerID'], inplace=True)
-
-# Change values which are Fe Male to Female in Gender column
-df['Gender'] = df['Gender'].replace('Fe Male', 'Female')
-
-# Change values which are Unmarried to Single in MaritalStatus column
-df['MaritalStatus'] = df['MaritalStatus'].replace('Unmarried', 'Single')
-
-target_col = 'ProdTaken'
-
-# Split into X (features) and y (target)
-X = df.drop(columns=[target_col])
-y = df[target_col]
-
-# Perform train-test split
-Xtrain, Xtest, ytrain, ytest = train_test_split(
-    X, y, test_size=0.2, random_state=42)
+Xtrain = pd.read_csv(Xtrain_path)
+Xtest = pd.read_csv(Xtest_path)
+ytrain = pd.read_csv(ytrain_path)
+ytest = pd.read_csv(ytest_path)
 
 
-# One-hot encode 'Type' and scale numeric features
+# One-hot encode and scale numeric features
 numeric_features = [
     'Age',
     'DurationOfPitch',
@@ -75,20 +70,20 @@ preprocessor = make_column_transformer(
 # Define base XGBoost model
 xgb_model = xgb.XGBClassifier(scale_pos_weight=class_weight, random_state=42)
 
-
 # Define hyperparameter grid
 param_grid = {
-    'xgbclassifier__n_estimators': [50, 75],
-    'xgbclassifier__max_depth': [2, 3],
-    'xgbclassifier__colsample_bytree': [0.4, 0.5],
-    'xgbclassifier__colsample_bylevel': [0.4, 0.5],
-    'xgbclassifier__learning_rate': [0.01, 0.05],
-    'xgbclassifier__reg_lambda': [0.4, 0.5],
+    'xgbclassifier__n_estimators': [50, 75, 100],
+    'xgbclassifier__max_depth': [2, 3, 4],
+    'xgbclassifier__colsample_bytree': [0.4, 0.5, 0.6],
+    'xgbclassifier__colsample_bylevel': [0.4, 0.5, 0.6],
+    'xgbclassifier__learning_rate': [0.01, 0.05, 0.1],
+    'xgbclassifier__reg_lambda': [0.4, 0.5, 0.6],
 }
 
 # Model pipeline
 model_pipeline = make_pipeline(preprocessor, xgb_model)
 
+# Start MLflow run
 with mlflow.start_run():
     # Hyperparameter tuning
     grid_search = GridSearchCV(model_pipeline, param_grid, cv=5, n_jobs=-1)
@@ -113,7 +108,7 @@ with mlflow.start_run():
     # Store and evaluate the best model
     best_model = grid_search.best_estimator_
 
-    classification_threshold = 0.5
+    classification_threshold = 0.45
 
     y_pred_train_proba = best_model.predict_proba(Xtrain)[:, 1]
     y_pred_train = (y_pred_train_proba >= classification_threshold).astype(int)
@@ -124,6 +119,7 @@ with mlflow.start_run():
     train_report = classification_report(ytrain, y_pred_train, output_dict=True)
     test_report = classification_report(ytest, y_pred_test, output_dict=True)
 
+    # Log the metrics for the best model
     mlflow.log_metrics({
         "train_accuracy": train_report['accuracy'],
         "train_precision": train_report['1']['precision'],
@@ -135,8 +131,7 @@ with mlflow.start_run():
         "test_f1-score": test_report['1']['f1-score']
     })
 
-
-    # Save the model locally
+   # Save the model locally
     model_path = "best_Tourism_Prediction_model_v1.joblib"
     joblib.dump(best_model, model_path)
 
